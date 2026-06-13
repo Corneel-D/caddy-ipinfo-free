@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/netip"
 	"net/http"
-	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -97,41 +96,44 @@ func (m *IPInfoFreeHandler) lookupIP(ip netip.Addr) (*MMDBResult, error) {
 }
 
 func (m *IPInfoFreeHandler) getClientIP(r *http.Request) (netip.Addr, error) {
-	// We handle the remote address as default fallback value
-	ipCandidate := strings.Split(r.RemoteAddr, ":")[0]
-	// Overwrite value depending on mode
+	// Handle value depending on mode
 	switch m.Mode {
-	case "":
-	case "enabled":
-	case "true":
-	case "on":
-	case "1":
-	case "strict":
-		break
+	case "", "enabled", "true", "on", "1", "strict":
+		return m.getRemoteAddr(r)
 	case "forwarded":
 		// Read ip from official header
 		if header := r.Header.Get("X-Forwarded-For"); header != "" {
-			ipCandidate = header
+			return netip.ParseAddr(header)
 		}
 	case "trusted":
 		// Read ip from official header if it comes from a trusted proxy
 		trustedProxy := caddyhttp.GetVar(r.Context(), caddyhttp.TrustedProxyVarKey).(bool)
 		if header := r.Header.Get("X-Forwarded-For"); header != "" && trustedProxy {
-			ipCandidate = header
+			return netip.ParseAddr(header)
 		}
 	default:
 		// Get the caddy replacer and replace all placeholders within mode
 		repl := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
-		if newCandidate := repl.ReplaceAll(m.Mode, ""); newCandidate == "" {
+		if ipCandidate := repl.ReplaceAll(m.Mode, ""); ipCandidate == "" {
 			if m.state.ErrorOnInvalidIP {
 				m.state.logger.Warn("ipinfo_free directive maps to an empty value, defaulting to remote address")
 			}
 		} else {
-			ipCandidate = newCandidate
+			return netip.ParseAddr(ipCandidate)
 		}
 	}
 
-	return netip.ParseAddr(ipCandidate)
+	return m.getRemoteAddr(r)
+}
+
+func (m *IPInfoFreeHandler) getRemoteAddr(r *http.Request) (netip.Addr, error) {
+	remoteAddrPort, err := netip.ParseAddrPort(r.RemoteAddr);
+	
+	if err == nil {
+		return remoteAddrPort.Addr(), nil
+	}
+
+	return netip.ParseAddr(r.RemoteAddr)
 }
 
 func (m IPInfoFreeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
